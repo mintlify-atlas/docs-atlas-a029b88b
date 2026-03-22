@@ -1,0 +1,60 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "HugBucket",
+  "projectDescription": "A multi-protocol gateway (S3 and FTP) that exposes Hugging Face Storage Buckets using a pure Xet content-addressable storage implementation.",
+  "theme": "aspen",
+  "primaryColor": "#1c64ec",
+  "lightColor": "#ffffff",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Deployment",
+            "pages": ["deployment/docker", "deployment/environment-variables"]
+          },
+          {
+            "group": "Protocols",
+            "pages": ["protocols/s3", "protocols/ftp"]
+          },
+          {
+            "group": "Architecture",
+            "pages": ["architecture/overview", "architecture/xet-storage", "architecture/bridge"]
+          },
+          {
+            "group": "Development",
+            "pages": ["development/setup", "development/configuration", "development/testing"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "S3-compatible gateway (AWS S3 REST API) backed by Hugging Face Storage Buckets",
+    "FTP gateway with path mapping as /<bucket>/<key>",
+    "Pure Python Xet content-addressable storage (CDC chunking, LZ4 compression, BLAKE3 hashing)",
+    "Docker-first deployment with a single container and a MODE environment variable",
+    "Multipart upload support with idempotent retry handling",
+    "Range-aware streaming downloads (byte-range requests)",
+    "LRU caching for xorb chunks, file metadata, and reconstruction plans",
+    "Server-side copy via Xet content-hash reuse (no re-upload)"
+  ],
+  "publicApiSurface": [
+    "hugbucket (CLI entrypoint, MODE=s3|ftp)",
+    "hugbucket-s3 (explicit S3 entrypoint)",
+    "hugbucket-ftp (explicit FTP entrypoint)",
+    "StorageBackend (abstract interface in hugbucket.core.backend)",
+    "HFStorageBackend / Bridge (concrete Xet+HF backend in hugbucket.bridge)",
+    "Config (dataclass in hugbucket.config)",
+    "create_s3_app(config, backend) (aiohttp app factory)",
+    "create_ftp_server(config, backend) (FTPServer factory)",
+    "S3 REST API: ListBuckets, CreateBucket, DeleteBucket, HeadBucket, GetBucketLocation, ListObjectsV2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects, CopyObject, multipart upload",
+    "FTP protocol: list, retrieve, store, delete, rename, mkdir"
+  ]
+}
