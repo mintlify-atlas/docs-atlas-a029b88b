@@ -1,97 +1,56 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "HugBucket"
+description: "Multi-protocol gateway for Hugging Face Storage Buckets — access your HF data via S3 or FTP."
 ---
 
-## Setting up
+## Get started
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run HugBucket with Docker in two commands and verify with the AWS CLI.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Full deployment guide with port mapping, Docker Compose, and auth configuration.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="S3 Protocol" icon="server" href="/protocols/s3">
+    Complete S3 REST API reference with AWS CLI and boto3 examples.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="FTP Protocol" icon="folder" href="/protocols/ftp">
+    FTP gateway reference with path mapping and passive port configuration.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is HugBucket?
 
-Everything you need to create world-class documentation.
+HugBucket is a self-hosted gateway that exposes Hugging Face Storage Buckets over standard S3 and FTP protocols. Any tool that speaks S3 — AWS CLI, boto3, rclone, S3 Browser — or FTP can read and write directly to your Hugging Face data without any code changes.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+Under the hood, HugBucket implements the full **Xet content-addressable storage** protocol in pure Python: Gearhash content-defined chunking, BLAKE3 hashing, LZ4 compression, and parallel xorb uploads. Data written through HugBucket is fully compatible with the `huggingface_hub` Python library and the HF web UI.
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="S3-compatible API" icon="aws">
+    Full S3 REST API on port 9000. Works with AWS CLI, boto3, rclone, and any S3-compatible client.
+  </Card>
+  <Card title="FTP gateway" icon="network-wired">
+    Standard FTP on port 2121 with `/<bucket>/<key>` path mapping. Useful for legacy tools.
+  </Card>
+  <Card title="Native Xet storage" icon="database">
+    Pure Python Xet CAS: CDC chunking, BLAKE3 hashing, LZ4 compression — compatible with `huggingface_hub`.
+  </Card>
+  <Card title="Docker-first" icon="docker">
+    Single image, one `MODE` variable. Switch between S3 and FTP by changing one environment variable.
+  </Card>
+  <Card title="Streaming + range requests" icon="arrow-down">
+    HTTP range requests for `GetObject` with CDN-level skip of irrelevant xorb chunks.
+  </Card>
+  <Card title="Multipart uploads" icon="upload">
+    S3 multipart upload with idempotent completion and automatic stale-upload cleanup.
+  </Card>
+  <Card title="Server-side copy" icon="copy">
+    `CopyObject` reuses the existing content hash — no bytes are re-downloaded or re-uploaded.
+  </Card>
+  <Card title="Built-in caching" icon="bolt">
+    LRU caches for xorb chunks (512 MiB), file metadata, and reconstruction plans.
+  </Card>
+</CardGroup>
