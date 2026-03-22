@@ -1,0 +1,158 @@
+---
+title: "Docker Deployment"
+description: "Deploy HugBucket using Docker"
+---
+
+HugBucket is distributed as a Docker image at `ghcr.io/sachnun/hugbucket`. It runs in either S3 or FTP mode depending on the `MODE` environment variable.
+
+<Warning>
+  `MODE` is required. The container exits immediately if it is not set.
+</Warning>
+
+## Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) installed
+- A Hugging Face token (`HF_TOKEN`) with read/write access to your storage buckets
+
+## Running HugBucket
+
+<Tabs>
+  <Tab title="S3 mode">
+
+    The S3 gateway listens on port **9000** and exposes an S3-compatible API.
+
+    <Steps>
+      <Step title="Pull and run the container">
+
+        ```bash
+        docker run -d \
+          -p 9000:9000 \
+          -e MODE=s3 \
+          -e HF_TOKEN=hf_xxxxx \
+          -e AWS_ACCESS_KEY_ID=hugbucket \
+          -e AWS_SECRET_ACCESS_KEY=hugbucket \
+          ghcr.io/sachnun/hugbucket
+        ```
+
+      </Step>
+      <Step title="Verify the gateway is running">
+
+        Use the AWS CLI to list buckets through the local endpoint:
+
+        ```bash
+        aws --endpoint-url http://localhost:9000 s3 ls
+        ```
+
+      </Step>
+      <Step title="Upload a file">
+
+        ```bash
+        aws --endpoint-url http://localhost:9000 s3 cp file.txt s3://my-bucket/file.txt
+        ```
+
+      </Step>
+    </Steps>
+
+    <Note>
+      If `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are both left empty, S3 authentication is disabled and any client can connect without credentials. Set both to non-empty values to require authentication.
+    </Note>
+
+  </Tab>
+  <Tab title="FTP mode">
+
+    The FTP gateway listens on port **2121** for the control connection and uses ports **30000–30099** for passive data transfers. Path mapping follows `/<bucket>/<key>`.
+
+    <Steps>
+      <Step title="Pull and run the container">
+
+        ```bash
+        docker run -d \
+          -p 2121:2121 \
+          -p 30000-30099:30000-30099 \
+          -e MODE=ftp \
+          -e HF_TOKEN=hf_xxxxx \
+          -e FTP_USERNAME=hugbucket \
+          -e FTP_PASSWORD=hugbucket \
+          ghcr.io/sachnun/hugbucket
+        ```
+
+      </Step>
+      <Step title="Connect with an FTP client">
+
+        ```bash
+        ftp localhost 2121
+        # username: hugbucket
+        # password: hugbucket
+        ```
+
+      </Step>
+    </Steps>
+
+    <Warning>
+      You must publish the full passive port range (`30000-30099`) alongside the control port (`2121`). Without it, passive mode transfers will fail to establish a data connection.
+    </Warning>
+
+    <Note>
+      To enable anonymous access, omit both `FTP_USERNAME` and `FTP_PASSWORD`. Setting only one of the two is a configuration error and will cause the server to refuse to start.
+    </Note>
+
+  </Tab>
+</Tabs>
+
+## Port reference
+
+| Port | Protocol | Description |
+|------|----------|-------------|
+| `9000` | TCP | S3 API endpoint |
+| `2121` | TCP | FTP control connection |
+| `30000–30099` | TCP | FTP passive data connections |
+
+These are the ports declared with `EXPOSE` in the Dockerfile. Publish only the ports relevant to your chosen mode.
+
+## Docker Compose
+
+The following Compose file shows both modes as separate services. Run only the service for the mode you need.
+
+<CodeGroup>
+
+```yaml docker-compose.yml
+services:
+  hugbucket-s3:
+    image: ghcr.io/sachnun/hugbucket
+    ports:
+      - "9000:9000"
+    environment:
+      MODE: s3
+      HF_TOKEN: hf_xxxxx
+      AWS_ACCESS_KEY_ID: hugbucket
+      AWS_SECRET_ACCESS_KEY: hugbucket
+    restart: unless-stopped
+
+  hugbucket-ftp:
+    image: ghcr.io/sachnun/hugbucket
+    ports:
+      - "2121:2121"
+      - "30000-30099:30000-30099"
+    environment:
+      MODE: ftp
+      HF_TOKEN: hf_xxxxx
+      FTP_USERNAME: hugbucket
+      FTP_PASSWORD: hugbucket
+    restart: unless-stopped
+```
+
+</CodeGroup>
+
+Start a single service:
+
+```bash
+# S3 only
+docker compose up -d hugbucket-s3
+
+# FTP only
+docker compose up -d hugbucket-ftp
+```
+
+<Warning>
+  Do not run both services simultaneously with the same `HF_TOKEN` if they target the same Hugging Face namespace, unless you have tested for write conflicts.
+</Warning>

@@ -1,0 +1,173 @@
+---
+title: "S3 Protocol"
+description: "Using HugBucket as an S3-compatible gateway"
+---
+
+## Overview
+
+HugBucket exposes a path-style S3-compatible HTTP API on port `9000`. All requests use the `/{bucket}/{key}` path format — virtual-hosted-style addressing is not supported.
+
+The gateway translates standard S3 REST operations into Hugging Face Storage Bucket API calls, so any S3-compatible tool (AWS CLI, boto3, S3 Browser, etc.) works out of the box.
+
+## Authentication
+
+HugBucket implements **AWS Signature V4** authentication (header-based and presigned URLs) as well as Signature V2 presigned URLs for compatibility with older clients.
+
+Credentials are configured via environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` | Access key presented to S3 clients |
+| `AWS_SECRET_ACCESS_KEY` | Secret key used to verify request signatures |
+
+<Warning>
+If **both** `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are left empty, authentication is completely disabled and any client can access the gateway without credentials. Only do this in trusted, isolated environments.
+</Warning>
+
+<Note>
+The `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` values you choose are arbitrary — they are not your actual AWS credentials. HugBucket uses the Hugging Face token (`HF_TOKEN`) for all backend access.
+</Note>
+
+## Supported operations
+
+| Operation | HTTP method | Path |
+| --- | --- | --- |
+| ListBuckets | `GET` | `/` |
+| CreateBucket | `PUT` | `/{bucket}` |
+| DeleteBucket | `DELETE` | `/{bucket}` |
+| HeadBucket | `HEAD` | `/{bucket}` |
+| GetBucketLocation | `GET` | `/{bucket}?location` |
+| ListObjectsV2 | `GET` | `/{bucket}?list-type=2` |
+| PutObject | `PUT` | `/{bucket}/{key}` |
+| GetObject | `GET` | `/{bucket}/{key}` |
+| HeadObject | `HEAD` | `/{bucket}/{key}` |
+| DeleteObject | `DELETE` | `/{bucket}/{key}` |
+| DeleteObjects (batch) | `POST` | `/{bucket}?delete` |
+| CopyObject | `PUT` + `x-amz-copy-source` header | `/{bucket}/{key}` |
+| InitiateMultipartUpload | `POST` | `/{bucket}/{key}?uploads` |
+| UploadPart | `PUT` | `/{bucket}/{key}?partNumber=N&uploadId=...` |
+| CompleteMultipartUpload | `POST` | `/{bucket}/{key}?uploadId=...` |
+| AbortMultipartUpload | `DELETE` | `/{bucket}/{key}?uploadId=...` |
+
+## Using with AWS CLI
+
+Pass `--endpoint-url` to point the AWS CLI at your HugBucket instance. The `--no-sign-request` flag is only needed when authentication is disabled.
+
+<CodeGroup>
+
+```bash List buckets
+aws --endpoint-url http://localhost:9000 s3 ls
+```
+
+```bash Upload a file
+aws --endpoint-url http://localhost:9000 s3 cp file.txt s3://my-bucket/file.txt
+```
+
+```bash Download a file
+aws --endpoint-url http://localhost:9000 s3 cp s3://my-bucket/file.txt ./file.txt
+```
+
+```bash List objects in a bucket
+aws --endpoint-url http://localhost:9000 s3 ls s3://my-bucket/
+```
+
+```bash Create a bucket
+aws --endpoint-url http://localhost:9000 s3 mb s3://my-new-bucket
+```
+
+```bash Remove a bucket
+aws --endpoint-url http://localhost:9000 s3 rb s3://my-bucket
+```
+
+```bash Delete an object
+aws --endpoint-url http://localhost:9000 s3 rm s3://my-bucket/file.txt
+```
+
+</CodeGroup>
+
+When credentials are set, configure them in your shell or `~/.aws/credentials`:
+
+```bash
+export AWS_ACCESS_KEY_ID=hugbucket
+export AWS_SECRET_ACCESS_KEY=hugbucket
+```
+
+## Using with boto3
+
+Set `endpoint_url` when creating the S3 client and supply the same credentials you configured on the server:
+
+```python
+import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="http://localhost:9000",
+    aws_access_key_id="hugbucket",
+    aws_secret_access_key="hugbucket",
+    region_name="us-east-1",
+)
+
+# List all buckets
+response = s3.list_buckets()
+for bucket in response["Buckets"]:
+    print(bucket["Name"])
+
+# Upload an object
+s3.put_object(Bucket="my-bucket", Key="hello.txt", Body=b"Hello, world!")
+
+# Download an object
+response = s3.get_object(Bucket="my-bucket", Key="hello.txt")
+print(response["Body"].read())
+```
+
+## Multipart upload
+
+HugBucket supports the full S3 multipart upload flow, which tools like the AWS CLI and boto3 use automatically for large files.
+
+<Steps>
+  <Step title="Initiate">
+    The client sends `POST /{bucket}/{key}?uploads`. HugBucket creates an in-memory upload record and returns a unique `uploadId`.
+  </Step>
+  <Step title="Upload parts">
+    The client sends one or more `PUT /{bucket}/{key}?partNumber=N&uploadId=...` requests. Each part is stored in memory, keyed by part number. An MD5 ETag is returned for each part.
+  </Step>
+  <Step title="Complete">
+    The client sends `POST /{bucket}/{key}?uploadId=...`. HugBucket concatenates all parts in order (freeing each as it goes to keep peak memory at ~1x the file size) and writes the result to Hugging Face storage as a single object.
+  </Step>
+  <Step title="Abort (optional)">
+    The client sends `DELETE /{bucket}/{key}?uploadId=...`. HugBucket discards all buffered parts and removes the upload record. Aborting an upload that is mid-completion returns `409 InvalidRequest`.
+  </Step>
+</Steps>
+
+### Idempotent completion
+
+If a network timeout causes the client to retry `CompleteMultipartUpload` while the upload is still being written:
+
+- **In progress** — the retry waits for the original request to finish, then returns the same result.
+- **Already completed** — the cached response body is returned immediately.
+- **Previously failed** — the upload state is reset so the client can re-upload parts and retry.
+
+### Stale upload cleanup
+
+A background task runs every 10 minutes and removes uploads that have been inactive for longer than the TTL defined by `multipart_upload_ttl` (default: `86400` seconds / 24 hours). Uploads actively being completed are never removed by the cleanup pass.
+
+## Range requests
+
+`GetObject` supports the `Range: bytes=<start>-<end>` header. HugBucket responds with HTTP `206 Partial Content` and the `Content-Range` header. If the requested range falls outside the object size, `416 Range Not Satisfiable` is returned.
+
+Range support enables parallel/resumable downloads, streaming media players, and tools like `wget --continue`.
+
+## Directory handling
+
+S3 has no native directory concept — "folders" are simulated by object key prefixes. When a client performs a `PUT` with a key ending in `/` and a zero-byte body (the standard S3 folder-creation pattern), HugBucket stores a `.hugbucket_keep` marker object in that prefix instead of a bare trailing-slash key.
+
+`HeadObject` on a trailing-slash key checks for this marker and returns `200` with `Content-Type: application/x-directory` if the directory exists.
+
+## Ignored paths
+
+The following paths are rejected with `404 NoSuchBucket` and never forwarded to Hugging Face, to avoid unnecessary API calls triggered by browsers and crawlers:
+
+- `favicon.ico`
+- `robots.txt`
+- `sitemap.xml`
+- `.well-known`

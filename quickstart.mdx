@@ -1,80 +1,140 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quick Start'
+description: 'Get HugBucket running in minutes with Docker'
 ---
 
-## Get started in three steps
+HugBucket is a multi-protocol gateway that exposes Hugging Face Storage Buckets over S3 and FTP. Pick the protocol that fits your toolchain and have it running in minutes.
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+## Prerequisites
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Docker" icon="docker" href="https://docs.docker.com/get-docker/">
+    Required to run HugBucket from the pre-built image. Install Docker Desktop or Docker Engine before continuing.
+  </Card>
+  <Card title="Hugging Face token" icon="key" href="https://huggingface.co/settings/tokens">
+    A Hugging Face access token (`HF_TOKEN`). Generate one from your HF account settings with read/write access to your buckets.
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Run HugBucket
+
+<Tabs>
+  <Tab title="S3 mode">
+    <Steps>
+      <Step title="Start the container">
+        Pull and run the HugBucket image with S3 mode enabled. Replace `hf_xxxxx` with your real Hugging Face token.
+
+        ```bash
+        docker run -d \
+          -p 9000:9000 \
+          -e MODE=s3 \
+          -e HF_TOKEN=hf_xxxxx \
+          -e AWS_ACCESS_KEY_ID=hugbucket \
+          -e AWS_SECRET_ACCESS_KEY=hugbucket \
+          ghcr.io/sachnun/hugbucket
+        ```
+
+        <Note>
+          `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are the credentials your S3 client will use to authenticate with HugBucket — they are not your AWS credentials. Set them to any value you choose and use the same values in your S3 client configuration.
+        </Note>
+      </Step>
+
+      <Step title="Verify with AWS CLI">
+        Once the container is up, point the AWS CLI at the local endpoint to list your Hugging Face buckets and upload a file.
+
+        ```bash
+        aws --endpoint-url http://localhost:9000 s3 ls
+        aws --endpoint-url http://localhost:9000 s3 cp file.txt s3://my-bucket/file.txt
+        ```
+
+        <Tip>
+          Add `--endpoint-url http://localhost:9000` to any `aws s3` or `aws s3api` command to route it through HugBucket.
+        </Tip>
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="FTP mode">
+    <Steps>
+      <Step title="Start the container">
+        FTP requires a command-and-control port plus a passive port range for data transfers. Replace `hf_xxxxx` with your real Hugging Face token.
+
+        ```bash
+        docker run -d \
+          -p 2121:2121 \
+          -p 30000-30099:30000-30099 \
+          -e MODE=ftp \
+          -e HF_TOKEN=hf_xxxxx \
+          -e FTP_USERNAME=hugbucket \
+          -e FTP_PASSWORD=hugbucket \
+          ghcr.io/sachnun/hugbucket
+        ```
+
+        <Warning>
+          You must publish the full passive port range (`30000-30099`) so that FTP data connections can be established. Omitting these ports will cause directory listings and file transfers to hang.
+        </Warning>
+      </Step>
+
+      <Step title="Connect with an FTP client">
+        Use any FTP client to connect to port `2121` on localhost.
+
+        ```bash
+        ftp localhost 2121
+        # username: hugbucket
+        # password: hugbucket
+        ```
+
+        <Note>
+          Paths follow the pattern `/<bucket>/<key>`. For example, `/my-bucket/data/file.txt` maps to the key `data/file.txt` in the bucket `my-bucket`.
+        </Note>
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `MODE` | Yes | Run mode: `s3` or `ftp` |
+| `HF_TOKEN` | Yes | Hugging Face access token |
+| `AWS_ACCESS_KEY_ID` | S3 only | S3 access key your client will use |
+| `AWS_SECRET_ACCESS_KEY` | S3 only | S3 secret key your client will use |
+| `FTP_USERNAME` | FTP only | FTP login username |
+| `FTP_PASSWORD` | FTP only | FTP login password |
+
+## Development mode
+
+To run HugBucket from source, install [uv](https://docs.astral.sh/uv/) and use the commands below.
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    uv sync
+    ```
+  </Step>
+
+  <Step title="Start the gateway">
+    Use the unified entrypoint with `MODE`, or call a protocol-specific entrypoint directly.
+
+    <CodeGroup>
+
+    ```bash Unified entrypoint
+    MODE=s3 HF_TOKEN=hf_xxxxx uv run hugbucket
+    ```
+
+    ```bash S3 entrypoint
+    HF_TOKEN=hf_xxxxx uv run hugbucket-s3
+    ```
+
+    ```bash FTP entrypoint
+    HF_TOKEN=hf_xxxxx uv run hugbucket-ftp
+    ```
+
+    </CodeGroup>
+
+    <Note>
+      The protocol-specific entrypoints (`hugbucket-s3`, `hugbucket-ftp`) still require the `MODE` environment variable to match the protocol. Using `hugbucket-s3` without `MODE=s3` will exit with an error.
+    </Note>
+  </Step>
+</Steps>

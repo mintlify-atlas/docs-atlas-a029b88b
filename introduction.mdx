@@ -1,0 +1,79 @@
+---
+title: "Introduction"
+description: "Multi-protocol gateway for Hugging Face Storage Buckets — expose your HF datasets and model files via S3 or FTP."
+---
+
+## What is HugBucket?
+
+HugBucket is a self-hosted gateway that translates standard S3 and FTP protocols into the Hugging Face Storage Bucket API. It lets any tool that speaks S3 (AWS CLI, boto3, S3 Browser, rclone) or FTP read and write directly to your Hugging Face repositories — no code changes required.
+
+Under the hood HugBucket implements the full **Xet content-addressable storage** protocol in pure Python: content-defined chunking, BLAKE3 hashing, LZ4 compression, and parallel xorb uploads. This is the same storage engine Hugging Face uses natively, so data written through HugBucket is fully compatible with the `huggingface_hub` Python library and the HF web UI.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get HugBucket running in two `docker run` commands
+  </Card>
+  <Card title="S3 Protocol" icon="server" href="/protocols/s3">
+    Full S3 REST API — list, get, put, delete, copy, multipart upload
+  </Card>
+  <Card title="FTP Protocol" icon="folder" href="/protocols/ftp">
+    FTP access with path mapping as `/<bucket>/<key>`
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    How HugBucket maps S3/FTP operations onto Xet storage
+  </Card>
+</CardGroup>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="S3-compatible API" icon="aws">
+    Works with AWS CLI, boto3, rclone, S3 Browser, and any other S3-compatible client out of the box.
+  </Card>
+  <Card title="FTP gateway" icon="network-wired">
+    Classic FTP access with `/<bucket>/<key>` path mapping — useful for legacy tools and simple file transfers.
+  </Card>
+  <Card title="Native Xet storage" icon="database">
+    Pure Python implementation of the Xet CAS protocol: CDC chunking, BLAKE3 hashing, LZ4 compression.
+  </Card>
+  <Card title="Docker-first" icon="docker">
+    A single container image runs either gateway. Switch between S3 and FTP with the `MODE` environment variable.
+  </Card>
+  <Card title="Streaming downloads" icon="arrow-down">
+    Range-aware streaming with byte-range request support. Only fetches the xorb chunks that cover the requested range.
+  </Card>
+  <Card title="Multipart uploads" icon="upload">
+    Full S3 multipart upload protocol with idempotent completion and automatic stale-upload cleanup.
+  </Card>
+  <Card title="Server-side copy" icon="copy">
+    `CopyObject` reuses the existing content hash — no re-download or re-upload of bytes.
+  </Card>
+  <Card title="Built-in caching" icon="bolt">
+    LRU caches for xorb chunks (512 MiB), file metadata, and reconstruction plans to minimize round-trips.
+  </Card>
+</CardGroup>
+
+## Supported S3 operations
+
+HugBucket implements the following S3 REST API operations:
+
+| Operation | Method | Description |
+|---|---|---|
+| `ListBuckets` | `GET /` | List all HF Storage Buckets |
+| `CreateBucket` | `PUT /{bucket}` | Create a new bucket |
+| `DeleteBucket` | `DELETE /{bucket}` | Delete a bucket |
+| `HeadBucket` | `HEAD /{bucket}` | Check bucket existence |
+| `GetBucketLocation` | `GET /{bucket}?location` | Return bucket region |
+| `ListObjectsV2` | `GET /{bucket}?list-type=2` | List objects with prefix/delimiter |
+| `PutObject` | `PUT /{bucket}/{key}` | Upload an object |
+| `GetObject` | `GET /{bucket}/{key}` | Download an object (supports Range) |
+| `HeadObject` | `HEAD /{bucket}/{key}` | Get object metadata |
+| `DeleteObject` | `DELETE /{bucket}/{key}` | Delete an object |
+| `DeleteObjects` | `POST /{bucket}?delete` | Batch delete objects |
+| `CopyObject` | `PUT` + `x-amz-copy-source` | Server-side copy |
+| Multipart upload | `POST`, `PUT`, `DELETE` | Initiate, upload parts, complete, abort |
+
+## Requirements
+
+- A [Hugging Face](https://huggingface.co) account with an access token (`HF_TOKEN`)
+- [Docker](https://docs.docker.com/get-docker/) (recommended) **or** Python 3.14+ with [uv](https://docs.astral.sh/uv/)

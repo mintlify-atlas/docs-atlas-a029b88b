@@ -1,0 +1,142 @@
+---
+title: "Development Setup"
+description: "Set up a local HugBucket development environment"
+---
+
+<Note>
+  HugBucket requires **Python 3.14 or later**. Verify your Python version with `python --version` before continuing.
+</Note>
+
+## Prerequisites
+
+- **Python 3.14+** — required by `requires-python = ">=3.14"` in `pyproject.toml`
+- **[uv](https://docs.astral.sh/uv/)** — used for dependency management and running scripts
+
+## Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the HugBucket repository and navigate into the project directory.
+
+    ```bash
+    git clone https://github.com/sachnun/hugbucket
+    cd hugbucket
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Use `uv sync` to install all runtime and dev dependencies into a local virtual environment.
+
+    ```bash
+    uv sync
+    ```
+
+    This installs both the main dependencies (`aiohttp`, `blake3`, `lz4`, `pyftpdlib`) and the dev group (`pytest`, `boto3`, `awscli`, `pytest-asyncio`, `pytest-aiohttp`).
+  </Step>
+
+  <Step title="Set your Hugging Face token">
+    HugBucket authenticates against the Hugging Face API using a token. Export it as an environment variable before running the server.
+
+    ```bash
+    export HF_TOKEN=hf_xxxxx
+    ```
+
+    Get your token from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+  </Step>
+
+  <Step title="Run the gateway">
+    Start HugBucket in either S3 or FTP mode.
+
+    <CodeGroup>
+
+    ```bash S3 mode
+    MODE=s3 HF_TOKEN=hf_xxxxx uv run hugbucket
+    ```
+
+    ```bash FTP mode
+    MODE=ftp HF_TOKEN=hf_xxxxx uv run hugbucket
+    ```
+
+    </CodeGroup>
+
+    The `MODE` environment variable selects the protocol. Valid values are `s3` and `ftp`. The server will exit with code `2` if `MODE` is missing or invalid.
+  </Step>
+</Steps>
+
+## Explicit protocol entrypoints
+
+Instead of setting `MODE`, you can use the protocol-specific entrypoints defined in `pyproject.toml`:
+
+```toml pyproject.toml
+[project.scripts]
+hugbucket     = "hugbucket.main:main"
+hugbucket-s3  = "hugbucket.apps.s3:main"
+hugbucket-ftp = "hugbucket.apps.ftp:main"
+```
+
+<CodeGroup>
+
+```bash S3 entrypoint
+HF_TOKEN=hf_xxxxx uv run hugbucket-s3
+```
+
+```bash FTP entrypoint
+HF_TOKEN=hf_xxxxx uv run hugbucket-ftp
+```
+
+</CodeGroup>
+
+Using a protocol-specific entrypoint still requires `MODE` to match — `hugbucket-s3` expects `MODE=s3` and `hugbucket-ftp` expects `MODE=ftp`. If `MODE` is set to the wrong value the process exits with code `2`.
+
+## CLI flags
+
+Both entrypoints accept the same CLI flags via argparse.
+
+### S3 gateway (`hugbucket-s3`)
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--host` | `0.0.0.0` | Bind host |
+| `--port` | `9000` | Bind port |
+| `--verbose`, `-v` | `false` | Enable debug logging |
+
+```bash
+HF_TOKEN=hf_xxxxx uv run hugbucket-s3 --host 127.0.0.1 --port 9090 --verbose
+```
+
+### FTP gateway (`hugbucket-ftp`)
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--host` | `0.0.0.0` | Bind host |
+| `--port` | `2121` | Bind port |
+| `--verbose`, `-v` | `false` | Enable debug logging |
+
+```bash
+HF_TOKEN=hf_xxxxx uv run hugbucket-ftp --host 127.0.0.1 --port 2222 --verbose
+```
+
+When `--verbose` is set, logging is configured at `DEBUG` level. Without it, `INFO` level is used.
+
+## Dev dependencies
+
+All dev dependencies are in the `[dependency-groups] dev` section of `pyproject.toml` and are installed automatically by `uv sync`:
+
+```toml pyproject.toml
+[dependency-groups]
+dev = [
+    "awscli>=1.44.55",
+    "boto3>=1.42.65",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "pytest-aiohttp>=1.0",
+]
+```
+
+| Package | Purpose |
+| --- | --- |
+| `pytest` | Test runner |
+| `pytest-asyncio` | `asyncio_mode = "auto"` support for async test functions |
+| `pytest-aiohttp` | aiohttp test client for S3 server integration tests |
+| `boto3` | AWS SDK used in integration tests |
+| `awscli` | CLI tool for manual S3 endpoint testing |

@@ -1,0 +1,182 @@
+---
+title: "Architecture overview"
+description: "How HugBucket translates S3/FTP operations into Hugging Face Xet storage"
+---
+
+HugBucket is built in three layers. A **protocol layer** accepts connections from S3 and FTP clients, a **backend interface** defines the contract between protocols and storage, and a **provider layer** implements that contract against Hugging Face Hub and Xet CAS.
+
+## Three-layer architecture
+
+<CardGroup cols={3}>
+  <Card title="Protocol layer" icon="plug">
+    S3 (aiohttp-based) and FTP (pyftpdlib-based) adapters parse client requests and translate them into backend calls. Neither adapter knows anything about HF or Xet.
+  </Card>
+  <Card title="Backend interface" icon="code">
+    `StorageBackend` is an abstract class in `hugbucket.core.backend` that defines 15 async methods. Protocol adapters depend only on this contract.
+  </Card>
+  <Card title="Provider layer" icon="database">
+    `HFStorageBackend` (also aliased as `Bridge`) in `hugbucket.bridge` implements `StorageBackend` by orchestrating calls to `HubClient` and `CASClient`.
+  </Card>
+</CardGroup>
+
+```
+S3 clients          FTP clients
+     │                   │
+     ▼                   ▼
+┌─────────────┐   ┌──────────────┐
+│  S3 adapter │   │  FTP adapter │   Protocol layer
+└──────┬──────┘   └──────┬───────┘
+       │                 │
+       ▼                 ▼
+┌──────────────────────────────────┐
+│       StorageBackend (ABC)       │   Backend interface
+└──────────────────────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│       HFStorageBackend           │   Provider layer
+│  ┌─────────────┐ ┌────────────┐  │
+│  │  HubClient  │ │  CASClient │  │
+│  └─────────────┘ └────────────┘  │
+└──────────────────────────────────┘
+          │               │
+          ▼               ▼
+     HF Hub API       Xet CAS
+```
+
+## Data models
+
+Two dataclasses in `hugbucket.core.models` are shared across every layer:
+
+```python hugbucket/core/models.py
+@dataclass
+class BucketInfo:
+    id: str
+    private: bool
+    created_at: str
+    size: int
+    total_files: int
+
+
+@dataclass
+class BucketFile:
+    type: str  # "file" or "directory"
+    path: str
+    size: int = 0
+    xet_hash: str = ""
+    mtime: str = ""
+    uploaded_at: str = ""
+```
+
+`BucketInfo` represents a bucket returned by `list_buckets` or `head_bucket`. `BucketFile` represents a single file or directory entry, carrying the `xet_hash` that is the key to content-addressable retrieval.
+
+## `StorageBackend` abstract interface
+
+Every protocol adapter calls only the methods defined on `StorageBackend`. This isolation means the S3 and FTP layers can be tested with a mock backend and swapped independently of the HF implementation.
+
+```python hugbucket/core/backend.py
+class StorageBackend(ABC):
+    """Backend capabilities required by protocol adapters."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Release backend resources (HTTP sessions, pools, caches)."""
+
+    @abstractmethod
+    async def resolve_namespace(self) -> str:
+        """Return the effective backend namespace for current credentials."""
+
+    @abstractmethod
+    async def list_buckets(self) -> list[BucketInfo]: ...
+
+    @abstractmethod
+    async def create_bucket(self, name: str, private: bool = False) -> str: ...
+
+    @abstractmethod
+    async def delete_bucket(self, name: str) -> None: ...
+
+    @abstractmethod
+    async def head_bucket(self, name: str) -> BucketInfo | None: ...
+
+    @abstractmethod
+    async def put_object(self, bucket: str, key: str, data: bytes) -> dict: ...
+
+    @abstractmethod
+    async def get_object(self, bucket: str, key: str) -> bytes | None: ...
+
+    @abstractmethod
+    async def get_object_stream(
+        self,
+        bucket: str,
+        key: str,
+        file_info: BucketFile | None = None,
+        byte_range: tuple[int, int] | None = None,
+    ) -> AsyncIterator[bytes] | None: ...
+
+    @abstractmethod
+    async def delete_object(self, bucket: str, key: str) -> None: ...
+
+    @abstractmethod
+    async def delete_objects(
+        self, bucket: str, keys: list[str]
+    ) -> tuple[list[str], list[dict]]: ...
+
+    @abstractmethod
+    async def head_object(self, bucket: str, key: str) -> BucketFile | None: ...
+
+    @abstractmethod
+    async def head_directory(self, bucket: str, prefix: str) -> bool: ...
+
+    @abstractmethod
+    async def copy_object(
+        self,
+        src_bucket: str,
+        src_key: str,
+        dst_bucket: str,
+        dst_key: str,
+    ) -> dict: ...
+
+    @abstractmethod
+    async def list_objects(
+        self,
+        bucket: str,
+        prefix: str = "",
+        delimiter: str = "",
+        max_keys: int = 1000,
+        continuation_token: str = "",
+    ) -> dict: ...
+```
+
+## Namespace resolution
+
+At startup, the server calls `resolve_namespace()`, which issues a single `GET /api/whoami-v2` request to HF Hub using the configured `HF_TOKEN`. The returned username is stored in `Config.hf_namespace` and prepended to every bucket operation as `{hf_namespace}/{bucket_name}`.
+
+<Note>
+  `hf_namespace` can also be set explicitly in config to target an organization rather than a personal account.
+</Note>
+
+## Caching layers
+
+HugBucket maintains four in-process caches to minimise round-trips to HF Hub and Xet CAS:
+
+| Cache | Type | Capacity | TTL |
+|---|---|---|---|
+| Xorb cache | LRU (bounded by memory) | 512 MiB | Eviction only |
+| File info cache | LRU (bounded by entry count) | 256 entries | 30 seconds |
+| Reconstruction cache | LRU (bounded by entry count) | 1 024 entries | 5 minutes |
+| Read token cache | Dict (per bucket) | Unbounded | Expires 60 s before token expiry |
+
+All cache limits are controlled by `Config` fields:
+
+```python hugbucket/config.py
+# Cache settings
+xorb_cache_max_bytes: int = 512 * 1024 * 1024  # 512 MiB
+recon_cache_max_entries: int = 1024
+recon_cache_ttl: int = 300  # 5 minutes
+file_info_cache_max_entries: int = 256
+file_info_cache_ttl: int = 30  # 30 seconds — short enough for consistency
+```
+
+<Note>
+  The file info cache has a deliberately short TTL (30 seconds) to keep metadata reasonably consistent when multiple clients are writing to the same bucket. After any mutation (`put_object`, `delete_object`, `copy_object`) the affected key is immediately evicted via `_invalidate_file_info`.
+</Note>

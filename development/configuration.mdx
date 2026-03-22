@@ -1,0 +1,170 @@
+---
+title: "Configuration Reference"
+description: "All configuration options for HugBucket via the Config dataclass"
+---
+
+All HugBucket configuration lives in a single `Config` dataclass defined in `hugbucket/config.py`. Fields that map to environment variables are resolved at instantiation time via `os.environ.get()`.
+
+## Config dataclass
+
+```python hugbucket/config.py
+@dataclass
+class Config:
+    # S3 gateway settings
+    host: str = "0.0.0.0"
+    port: int = 9000
+    region: str = "us-east-1"
+
+    # FTP gateway settings
+    ftp_host: str = "0.0.0.0"
+    ftp_port: int = 2121
+    ftp_user: str = field(default_factory=lambda: os.environ.get("FTP_USERNAME", ""))
+    ftp_password: str = field(
+        default_factory=lambda: os.environ.get("FTP_PASSWORD", "")
+    )
+    # HF Hub settings
+    hf_endpoint: str = "https://huggingface.co"
+    hf_token: str = field(default_factory=lambda: os.environ.get("HF_TOKEN", ""))
+
+    # S3 auth — maps to HF token
+    s3_access_key: str = field(
+        default_factory=lambda: os.environ.get("AWS_ACCESS_KEY_ID", "")
+    )
+    s3_secret_key: str = field(
+        default_factory=lambda: os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    )
+
+    # HF namespace (user or org that owns the buckets)
+    # Resolved automatically from HF token via /api/whoami-v2 at startup
+    hf_namespace: str = ""
+
+    # Xet CDC settings
+    xet_chunk_target: int = 65536   # 64 KiB
+    xet_chunk_min: int = 8192       # 8 KiB
+    xet_chunk_max: int = 131072     # 128 KiB
+    xet_xorb_max_bytes: int = 67108864  # 64 MiB
+
+    # Concurrency / connection-pool settings
+    http_pool_size: int = 0  # 0 = unlimited
+
+    # Upload settings
+    cas_upload_timeout: int = 300       # 5 minutes per CAS request
+    cas_upload_retries: int = 3         # retry count for CAS xorb/shard uploads
+    cas_retry_base_delay: float = 1.0   # base delay (seconds) for exponential backoff
+    multipart_upload_ttl: int = 86400   # 24 hours before stale multipart cleanup
+
+    # Cache settings
+    xorb_cache_max_bytes: int = 512 * 1024 * 1024  # 512 MiB
+    recon_cache_max_entries: int = 1024
+    recon_cache_ttl: int = 300          # 5 minutes
+    file_info_cache_max_entries: int = 256
+    file_info_cache_ttl: int = 30       # 30 seconds
+```
+
+---
+
+## S3 gateway
+
+Fields that control the S3 protocol listener. These can be overridden via `--host` and `--port` CLI flags on `hugbucket-s3`.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | `str` | `"0.0.0.0"` | IP address the S3 server binds to |
+| `port` | `int` | `9000` | TCP port for the S3 listener |
+| `region` | `str` | `"us-east-1"` | AWS region string returned in S3 responses |
+
+---
+
+## FTP gateway
+
+Fields that control the FTP protocol listener. `--host` and `--port` CLI flags on `hugbucket-ftp` override `ftp_host` and `ftp_port`. Credentials are read from environment variables.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `ftp_host` | `str` | `"0.0.0.0"` | IP address the FTP server binds to |
+| `ftp_port` | `int` | `2121` | TCP port for the FTP listener |
+
+<ParamField path="env.FTP_USERNAME" type="string" default="">
+  FTP login username. Maps to `ftp_user` on the `Config` dataclass. Set via the `FTP_USERNAME` environment variable.
+</ParamField>
+
+<ParamField path="env.FTP_PASSWORD" type="string" default="">
+  FTP login password. Maps to `ftp_password` on the `Config` dataclass. Set via the `FTP_PASSWORD` environment variable.
+</ParamField>
+
+---
+
+## Hugging Face
+
+Settings for the HF Hub API connection.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `hf_endpoint` | `str` | `"https://huggingface.co"` | Base URL for the Hugging Face API |
+| `hf_namespace` | `str` | `""` | HF user or org that owns the buckets. Resolved automatically from the token via `/api/whoami-v2` at startup if left empty |
+
+<ParamField path="env.HF_TOKEN" type="string" required>
+  Hugging Face API token. Maps to `hf_token` on the `Config` dataclass. Required — the server exits with code `1` if this is empty. Set via the `HF_TOKEN` environment variable.
+</ParamField>
+
+---
+
+## S3 authentication
+
+S3 clients authenticate using standard AWS credentials. If both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are empty, S3 authentication is disabled and a warning is logged.
+
+<ParamField path="env.AWS_ACCESS_KEY_ID" type="string" default="">
+  S3 access key ID. Maps to `s3_access_key` on the `Config` dataclass. Set via the `AWS_ACCESS_KEY_ID` environment variable.
+</ParamField>
+
+<ParamField path="env.AWS_SECRET_ACCESS_KEY" type="string" default="">
+  S3 secret access key. Maps to `s3_secret_key` on the `Config` dataclass. Set via the `AWS_SECRET_ACCESS_KEY` environment variable.
+</ParamField>
+
+---
+
+## Xet CDC settings
+
+Parameters for the content-defined chunking (CDC) algorithm used when uploading files to Xet CAS. The defaults match Hugging Face's Xet protocol.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `xet_chunk_target` | `int` | `65536` (64 KiB) | Target chunk size for the Gearhash CDC algorithm |
+| `xet_chunk_min` | `int` | `8192` (8 KiB) | Minimum chunk size; interior chunks are never smaller than this |
+| `xet_chunk_max` | `int` | `131072` (128 KiB) | Maximum chunk size; a boundary is forced at this size regardless of hash |
+| `xet_xorb_max_bytes` | `int` | `67108864` (64 MiB) | Maximum serialized size of a single xorb before it is flushed and a new one started |
+
+---
+
+## Connection pool
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `http_pool_size` | `int` | `0` | Total outbound HTTP connections shared across all concurrent downloads. `0` means unlimited — no cap on simultaneous outbound connections |
+
+---
+
+## Upload settings
+
+Controls retry behavior and timeouts for uploading xorbs and shards to Xet CAS.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `cas_upload_timeout` | `int` | `300` (5 minutes) | Per-request timeout in seconds for CAS xorb and shard uploads |
+| `cas_upload_retries` | `int` | `3` | Number of retry attempts for failed CAS xorb or shard uploads |
+| `cas_retry_base_delay` | `float` | `1.0` | Base delay in seconds for exponential backoff between CAS upload retries |
+| `multipart_upload_ttl` | `int` | `86400` (24 hours) | Seconds before a stale in-progress multipart upload is eligible for cleanup |
+
+---
+
+## Cache settings
+
+HugBucket maintains three in-memory caches to reduce repeated network round-trips to the HF Hub and Xet CAS.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `xorb_cache_max_bytes` | `int` | `536870912` (512 MiB) | Maximum total bytes of decompressed xorb chunks held in the LRU xorb cache |
+| `recon_cache_max_entries` | `int` | `1024` | Maximum number of reconstruction plans cached in the LRU recon cache |
+| `recon_cache_ttl` | `int` | `300` (5 minutes) | Seconds before a cached reconstruction plan is considered stale |
+| `file_info_cache_max_entries` | `int` | `256` | Maximum number of file metadata entries cached in the LRU file-info cache |
+| `file_info_cache_ttl` | `int` | `30` (30 seconds) | Seconds before a cached file metadata entry is considered stale. Kept short to maintain consistency after mutations |

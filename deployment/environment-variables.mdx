@@ -1,0 +1,119 @@
+---
+title: "Environment Variables"
+description: "Full reference for all HugBucket configuration environment variables"
+---
+
+HugBucket is configured entirely through environment variables. The table below is a quick-reference summary; detailed descriptions follow.
+
+## Quick reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `MODE` | Yes | — | Run mode: `s3` or `ftp` |
+| `HF_TOKEN` | Yes | — | Hugging Face API token |
+| `AWS_ACCESS_KEY_ID` | No | `""` | S3 access key |
+| `AWS_SECRET_ACCESS_KEY` | No | `""` | S3 secret key |
+| `FTP_USERNAME` | No | `""` | FTP username (empty = anonymous) |
+| `FTP_PASSWORD` | No | `""` | FTP password (empty = anonymous) |
+
+---
+
+## Required variables
+
+<ParamField path="MODE" type="string" required>
+  Selects the gateway protocol. Must be either `s3` or `ftp`. The process exits with an error if this variable is missing or empty.
+</ParamField>
+
+<ParamField path="HF_TOKEN" type="string" required>
+  Your Hugging Face API token. Used to authenticate all requests to the Hugging Face storage backend and to resolve your namespace via `/api/whoami-v2` at startup.
+
+  <Note>
+    Generate a token with **write** access at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+  </Note>
+</ParamField>
+
+---
+
+## S3 authentication
+
+These variables apply only when `MODE=s3`. They define the credentials that S3 clients must present when connecting to the HugBucket S3 endpoint.
+
+<ParamField path="AWS_ACCESS_KEY_ID" type="string" default="">
+  The access key ID that S3 clients must supply. Maps to the Hugging Face token internally.
+</ParamField>
+
+<ParamField path="AWS_SECRET_ACCESS_KEY" type="string" default="">
+  The secret access key that S3 clients must supply alongside `AWS_ACCESS_KEY_ID`.
+</ParamField>
+
+<Note>
+  If both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are left empty, S3 authentication is **disabled** — any client can connect without credentials. Set both to non-empty values in production.
+</Note>
+
+<Warning>
+  Setting only one of the two S3 credentials does not produce an error but will leave the gateway in an inconsistent authentication state. Always set both or neither.
+</Warning>
+
+---
+
+## FTP settings
+
+These variables apply only when `MODE=ftp`.
+
+<ParamField path="FTP_USERNAME" type="string" default="">
+  The FTP username clients must authenticate with. Must be set together with `FTP_PASSWORD`.
+</ParamField>
+
+<ParamField path="FTP_PASSWORD" type="string" default="">
+  The FTP password clients must authenticate with. Must be set together with `FTP_USERNAME`.
+</ParamField>
+
+<Note>
+  Leave **both** `FTP_USERNAME` and `FTP_PASSWORD` empty to allow anonymous FTP access. Setting only one of the two is a configuration error and will cause the server to refuse to start.
+</Note>
+
+---
+
+## Internal configuration defaults
+
+The following settings are defined in the `Config` dataclass (`hugbucket/config.py`) and cannot currently be overridden via environment variables. They are documented here for reference.
+
+### Network
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `host` | `0.0.0.0` | S3 gateway bind address |
+| `port` | `9000` | S3 gateway bind port |
+| `ftp_host` | `0.0.0.0` | FTP gateway bind address |
+| `ftp_port` | `2121` | FTP gateway bind port |
+| `region` | `us-east-1` | S3 region advertised to clients |
+| `hf_endpoint` | `https://huggingface.co` | Hugging Face API base URL |
+| `http_pool_size` | `0` | Max outbound connections (0 = unlimited) |
+
+### Xet CDC (content-defined chunking)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `xet_chunk_target` | `65536` (64 KiB) | Target chunk size |
+| `xet_chunk_min` | `8192` (8 KiB) | Minimum chunk size |
+| `xet_chunk_max` | `131072` (128 KiB) | Maximum chunk size |
+| `xet_xorb_max_bytes` | `67108864` (64 MiB) | Maximum XORB size |
+
+### Upload
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `cas_upload_timeout` | `300` | Seconds before a CAS request times out |
+| `cas_upload_retries` | `3` | Retry attempts for CAS xorb/shard uploads |
+| `cas_retry_base_delay` | `1.0` | Base delay in seconds for exponential backoff |
+| `multipart_upload_ttl` | `86400` (24 h) | Seconds before stale multipart uploads are cleaned up |
+
+### Cache
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `xorb_cache_max_bytes` | `536870912` (512 MiB) | Maximum in-memory XORB cache size |
+| `recon_cache_max_entries` | `1024` | Maximum reconstruction cache entries |
+| `recon_cache_ttl` | `300` (5 min) | Reconstruction cache entry TTL in seconds |
+| `file_info_cache_max_entries` | `256` | Maximum file info cache entries |
+| `file_info_cache_ttl` | `30` (30 s) | File info cache TTL in seconds — kept short for consistency |

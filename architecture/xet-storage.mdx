@@ -1,0 +1,248 @@
+---
+title: "Xet storage"
+description: "How HugBucket implements the Xet content-addressable storage protocol"
+---
+
+Xet is Hugging Face's content-addressable storage (CAS) protocol. Instead of uploading files as opaque blobs, Xet splits each file into variable-size chunks, deduplicates at the chunk level, groups chunks into compressed bundles called **xorbs**, and tracks reconstruction metadata in binary files called **shards**. HugBucket implements this protocol in pure Python so data it writes is fully compatible with `huggingface_hub` and the HF web UI.
+
+## Content-defined chunking
+
+HugBucket splits files using a **Gearhash rolling hash** (CDC), the same algorithm used by xet-core. A 64-byte sliding window rolls over the data; when the hash matches a boundary condition, a chunk boundary is emitted.
+
+Chunk size constraints from `hugbucket/config.py`:
+
+```python hugbucket/config.py
+# Xet CDC settings
+xet_chunk_target: int = 65536   # 64 KiB  (average)
+xet_chunk_min: int = 8192       # 8 KiB
+xet_chunk_max: int = 131072     # 128 KiB
+```
+
+The boundary mask is configured in `chunker.py` so that on average a boundary occurs roughly every 64 KiB:
+
+```python hugbucket/xet/chunker.py
+# Boundary mask: 16 high bits set → average chunk ~64 KiB
+GEAR_MASK = 0xFFFF_0000_0000_0000
+
+# Default chunk size constraints
+MIN_CHUNK_SIZE = 8 * 1024    # 8 KiB
+MAX_CHUNK_SIZE = 128 * 1024  # 128 KiB
+GEAR_WINDOW = 64             # Gearhash window size in bytes
+```
+
+The `chunk_data` function returns a list of `Chunk` objects:
+
+```python hugbucket/xet/chunker.py
+@dataclass
+class Chunk:
+    """A single CDC chunk."""
+    offset: int  # byte offset in original data
+    data: bytes  # chunk content
+
+def chunk_data(
+    data: bytes | memoryview,
+    min_size: int = MIN_CHUNK_SIZE,
+    max_size: int = MAX_CHUNK_SIZE,
+) -> list[Chunk]:
+    """Split data into variable-size chunks using Gearhash CDC."""
+```
+
+<Note>
+  CDC produces the same chunk boundaries regardless of where new data is inserted. Prepending or appending bytes to a file only changes the boundary at the edit site — the rest of the chunks remain identical and are not re-uploaded.
+</Note>
+
+## Hashing
+
+All hashing uses **BLAKE3** with separate 32-byte keyed contexts for each hash type. There are four hash functions in `hugbucket/xet/hasher.py`:
+
+| Function | Input | Key | Purpose |
+|---|---|---|---|
+| `chunk_hash` | chunk `bytes` | `DATA_KEY` | Unique ID for a single chunk |
+| `xorb_hash` | chunk hashes + sizes | `INTERNAL_NODE_KEY` (Merkle tree) | Unique ID for a xorb |
+| `file_hash` | chunk hashes + sizes | Merkle root then `FILE_KEY` (32 zero bytes) | Unique ID for a file; stored as `xetHash` |
+| `verification_hash` | chunk hashes concatenated | `VERIFICATION_KEY` | Per-term integrity check in the shard |
+
+```python hugbucket/xet/hasher.py
+def chunk_hash(data: bytes) -> bytes:
+    """Hash a single chunk's data. Returns 32 bytes."""
+    return blake3.blake3(data, key=DATA_KEY).digest()
+
+
+def xorb_hash(chunk_hashes: list[bytes], chunk_sizes: list[int]) -> bytes:
+    """Compute xorb hash (Merkle root of its chunks). Returns 32 bytes."""
+    return _merkle_root(chunk_hashes, chunk_sizes)
+
+
+def file_hash(chunk_hashes: list[bytes], chunk_sizes: list[int]) -> bytes:
+    """Compute file hash.
+
+    1. Compute Merkle root over ALL file chunks
+    2. Apply one more Blake3 keyed hash with FILE_KEY (32 zero bytes)
+    """
+    root = _merkle_root(chunk_hashes, chunk_sizes)
+    return blake3.blake3(root, key=FILE_KEY).digest()
+
+
+def verification_hash(chunk_hashes: list[bytes]) -> bytes:
+    """Compute term verification hash.
+
+    Concatenate raw 32-byte chunk hashes, then Blake3 keyed with VERIFICATION_KEY.
+    """
+    content = b"".join(chunk_hashes)
+    return blake3.blake3(content, key=VERIFICATION_KEY).digest()
+```
+
+The `hash_to_hex` function uses a non-standard encoding: each 8-byte group within the 32-byte hash is treated as a little-endian `u64` and formatted as 16 hex characters. This matches the encoding used by xet-core and `huggingface_hub`.
+
+## Xorbs
+
+A **xorb** is a binary container of LZ4-compressed chunks. Each chunk is prefixed by an 8-byte header:
+
+```
+[ChunkHeader 8B][CompressedData][ChunkHeader 8B][CompressedData]...
+
+ChunkHeader layout (8 bytes):
+  byte 0     — version (currently 0)
+  bytes 1-3  — compressed_size (LE u24)
+  byte 4     — compression_type (0=None, 1=LZ4, 2=ByteGrouping4+LZ4)
+  bytes 5-7  — uncompressed_size (LE u24)
+```
+
+Maximum xorb size is **64 MiB**:
+
+```python hugbucket/xet/xorb.py
+XORB_MAX_BYTES = 64 * 1024 * 1024  # 64 MiB
+```
+
+`serialize_xorb` compresses each chunk with LZ4 frame format (falling back to uncompressed if LZ4 does not shrink the data) and returns the serialized bytes plus the byte offset of each chunk within the xorb:
+
+```python hugbucket/xet/xorb.py
+def serialize_xorb(
+    chunks: list[bytes],
+) -> tuple[bytes, list[XorbChunkOffset]]:
+    """Serialize a list of chunk data into xorb binary format.
+
+    Returns (serialized_xorb_bytes, list_of_chunk_offsets).
+    """
+```
+
+`deserialize_xorb` is the inverse — it reads the binary blob and returns a list of `ChunkEntry` objects with the decompressed bytes. It handles both LZ4 frame format (written by xet-core and HugBucket) and the older LZ4 block format:
+
+```python hugbucket/xet/xorb.py
+@dataclass
+class ChunkEntry:
+    """A chunk within a xorb."""
+    uncompressed_data: bytes
+    uncompressed_size: int
+
+def deserialize_xorb(data: bytes) -> list[ChunkEntry]:
+    """Deserialize xorb binary data into a list of chunks."""
+```
+
+## Shards
+
+A **shard** is a binary metadata file that carries file reconstruction information and xorb metadata. The CAS uses shards to answer reconstruction queries. `build_shard` in `hugbucket/xet/shard.py` assembles the complete binary blob:
+
+```
+Shard structure:
+  [Header 48B]              — magic tag + version
+  [File Info sections]      — file hash, terms, verification hashes
+  [File Bookend 48B]        — 0xFF × 32 sentinel
+  [Xorb Info sections]      — xorb hash, chunk hashes, byte ranges
+  [Xorb Bookend 48B]        — 0xFF × 32 sentinel
+  [File Lookup Table]       — sorted by truncated hash
+  [Xorb Lookup Table]       — sorted by truncated hash
+  [Chunk Lookup Table]      — sorted by truncated hash
+  [Footer 200B]             — offsets, counts, timestamps
+```
+
+Key dataclasses used when building a shard:
+
+```python hugbucket/xet/shard.py
+@dataclass
+class FileInfo:
+    """File reconstruction info."""
+    file_hash: bytes           # 32 bytes
+    terms: list[FileDataTerm]
+    verification_hashes: list[bytes]  # one per term, 32 bytes each
+
+@dataclass
+class FileDataTerm:
+    """A term in the file reconstruction: a range of chunks in a xorb."""
+    xorb_hash: bytes    # 32 bytes
+    cas_flags: int      # u32
+    unpacked_bytes: int # u32
+    chunk_start: int    # u32
+    chunk_end: int      # u32
+
+@dataclass
+class XorbInfo:
+    """Metadata for a xorb."""
+    xorb_hash: bytes          # 32 bytes
+    cas_flags: int            # u32
+    chunks: list[CASChunkInfo]
+    total_bytes_in_xorb: int  # total uncompressed size
+    total_bytes_on_disk: int  # total serialized xorb size
+
+@dataclass
+class CASChunkInfo:
+    """Metadata for a single chunk within a xorb."""
+    chunk_hash: bytes        # 32 bytes
+    byte_range_start: int    # u32 — offset in serialized xorb
+    unpacked_bytes: int      # u32
+```
+
+## Upload flow
+
+All CPU-bound work (chunking, hashing, LZ4 compression) is offloaded to a thread via `asyncio.to_thread` so the async event loop stays responsive during uploads.
+
+<Steps>
+  <Step title="CDC chunk the data">
+    `chunk_data(data)` splits the file into variable-size chunks using the Gearhash rolling hash (min 8 KiB, target 64 KiB, max 128 KiB).
+  </Step>
+  <Step title="Hash all chunks">
+    Each chunk's bytes are hashed with `chunk_hash(c.data)` using BLAKE3 keyed with `DATA_KEY`. Chunk sizes are also recorded.
+  </Step>
+  <Step title="Compute the file hash">
+    `file_hash(c_hashes, c_sizes)` builds a Merkle tree over all chunk hashes (mean branching factor 4), then applies one final BLAKE3 pass with `FILE_KEY`. The resulting hex string is stored as `xetHash` on HF Hub.
+  </Step>
+  <Step title="Group chunks into xorbs and compress">
+    Chunks are batched into xorbs (up to 1 024 chunks or half of 64 MiB, whichever comes first). `serialize_xorb(xorb_chunks)` LZ4-compresses each chunk and packs them with 8-byte headers. `xorb_hash` is computed over the xorb's chunk hashes.
+  </Step>
+  <Step title="Upload xorbs to CAS">
+    A write token is obtained from HF Hub (`GET /api/buckets/{bucket_id}/xet-write-token`). Each xorb is POSTed to `{cas_url}/v1/xorbs/default/{xorb_hash}` with exponential-backoff retry (up to 3 attempts, base delay 1 s).
+  </Step>
+  <Step title="Build and upload the shard">
+    `build_shard([file_info], xorb_infos)` assembles the binary shard blob. It is POSTed to `{cas_url}/v1/shards`. This is also CPU-bound and runs in a thread.
+  </Step>
+  <Step title="Register the file with Hub">
+    `hub.batch_files(bucket_id, add=[{"path": key, "xetHash": file_hash_hex, ...}])` sends an NDJSON batch request to `POST /api/buckets/{bucket_id}/batch`. The file now appears in listings. The file info cache entry is immediately invalidated.
+  </Step>
+</Steps>
+
+## Download flow
+
+<Steps>
+  <Step title="Get file metadata">
+    `hub.get_paths_info(bucket_id, [key])` returns a `BucketFile` with `xet_hash` and `size`. If the file is zero bytes, an empty iterator is returned immediately.
+  </Step>
+  <Step title="Get a read token">
+    `_get_read_token(bucket_id)` returns a cached `XetConnectionInfo` (refreshed 60 seconds before expiry) containing `cas_url` and `access_token`.
+  </Step>
+  <Step title="Get the reconstruction plan">
+    `cas.get_reconstruction(conn, file_hash)` calls `GET {cas_url}/v1/reconstructions/{file_hash}`. The response contains a list of `ReconstructionTerm` objects (each referencing a xorb hash and a chunk range) and a `fetch_info` map of presigned CDN URLs. Results are cached for 5 minutes (up to 1 024 entries).
+  </Step>
+  <Step title="Skip terms outside the requested byte range">
+    For each `ReconstructionTerm`, the cumulative byte boundaries are pre-computed. Terms that fall entirely before `byte_range.start` are skipped with `continue`; terms past `byte_range.end` break the loop. This makes random-access seeks O(relevant terms) instead of O(all terms).
+  </Step>
+  <Step title="Fetch xorb ranges from CDN">
+    `cas.fetch_xorb_range(fetch)` issues an HTTP range request (`Range: bytes=start-end`) to the presigned CDN URL. The compressed xorb bytes are returned.
+  </Step>
+  <Step title="Decompress and yield chunks">
+    `deserialize_xorb(xorb_bytes)` runs in a thread (via `asyncio.to_thread`). Decompressed `ChunkEntry` objects are cached in the LRU xorb cache (512 MiB). Each relevant chunk is trimmed to the requested byte window and yielded to the caller.
+  </Step>
+</Steps>
+
+<Note>
+  The xorb cache key is `{xorb_hash}:{range_start}:{range_end}`. A cache hit means the CDN fetch and decompression are both skipped entirely for that xorb range.
+</Note>

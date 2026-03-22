@@ -1,0 +1,216 @@
+---
+title: "Testing"
+description: "Running and writing tests for HugBucket"
+---
+
+## Test setup
+
+HugBucket uses [pytest](https://docs.pytest.org/) with `asyncio_mode = "auto"` configured in `pyproject.toml`. This means all `async def` test functions run automatically in an event loop — no `@pytest.mark.asyncio` decorator is needed.
+
+```toml pyproject.toml
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: tests that hit live HF API (deselect with '-m not integration')",
+]
+```
+
+<Steps>
+  <Step title="Install dev dependencies">
+    Dev dependencies are in the `dev` group and are included by default with `uv sync`.
+
+    ```bash
+    uv sync
+    ```
+
+    This installs `pytest`, `pytest-asyncio`, `pytest-aiohttp`, `boto3`, and `awscli`.
+  </Step>
+
+  <Step title="Run all unit tests">
+    Run the full test suite, excluding integration tests that require a live HF API connection.
+
+    ```bash
+    uv run pytest -m "not integration"
+    ```
+  </Step>
+
+  <Step title="Run integration tests (optional)">
+    Integration tests hit the live Hugging Face API and require a valid `HF_TOKEN`.
+
+    ```bash
+    HF_TOKEN=hf_xxxxx uv run pytest -m integration
+    ```
+
+    <Note>
+      Integration tests create and delete real HF Storage Buckets. Use a token scoped to a test account or namespace. The `conftest.py` fixture skips integration tests automatically with `pytest.skip()` if `HF_TOKEN` is not set.
+    </Note>
+  </Step>
+</Steps>
+
+## Running tests
+
+<CodeGroup>
+
+```bash All tests
+uv run pytest
+```
+
+```bash Skip integration tests
+uv run pytest -m "not integration"
+```
+
+```bash Integration tests only
+HF_TOKEN=hf_xxxxx uv run pytest -m integration
+```
+
+```bash Single test file
+uv run pytest tests/test_chunker.py
+```
+
+```bash Verbose output
+uv run pytest -v
+```
+
+</CodeGroup>
+
+## Test markers
+
+HugBucket defines a single custom marker:
+
+| Marker | Description |
+| --- | --- |
+| `integration` | Tests that make live requests to the Hugging Face API. Require `HF_TOKEN` to be set. |
+
+Apply the marker to a class or function:
+
+```python
+import pytest
+
+@pytest.mark.integration
+class TestBucketOperations:
+    async def test_create_and_delete_bucket(self, bridge) -> None:
+        ...
+```
+
+Deselect integration tests in CI or offline environments:
+
+```bash
+uv run pytest -m "not integration"
+```
+
+## Test structure
+
+All tests live in the `tests/` directory.
+
+```
+tests/
+├── conftest.py                  # Shared fixtures: random_bytes, small_bytes, hf_token
+├── contract/
+│   └── test_protocol_contract.py  # Backend protocol contract tests
+├── test_boto3.py                # boto3 client integration against S3 server
+├── test_bridge.py               # Unit tests for HFStorageBackend (bridge layer)
+├── test_chunker.py              # Gearhash CDC chunker unit tests
+├── test_ftp_app.py              # FTP app entrypoint wiring tests
+├── test_ftp_config.py           # FTP configuration tests
+├── test_ftp_filesystem.py       # FTP filesystem abstraction tests
+├── test_ftp_runtime.py          # FTP runtime/server lifecycle tests
+├── test_ftp_server.py           # FTP server integration tests
+├── test_hasher.py               # Xet hashing (chunk, file, xorb, verification) tests
+├── test_integration.py          # Live HF API integration tests
+├── test_main.py                 # MODE-based entrypoint routing tests
+├── test_s3_app.py               # S3 app entrypoint mode and startup wiring tests
+├── test_s3_auth.py              # S3 authentication tests
+├── test_s3_server.py            # S3 server protocol tests
+├── test_shard.py                # Xet shard serialization tests
+└── test_xorb.py                 # Xorb serialization/deserialization tests
+```
+
+### Shared fixtures (`conftest.py`)
+
+Three fixtures are available to all tests:
+
+```python tests/conftest.py
+@pytest.fixture
+def random_bytes() -> bytes:
+    """200 KB of deterministic pseudo-random data (good for CDC tests)."""
+    return os.urandom(200 * 1024)
+
+
+@pytest.fixture
+def small_bytes() -> bytes:
+    """1 KB payload — fits in a single CDC chunk."""
+    return os.urandom(1024)
+
+
+@pytest.fixture(scope="session")
+def hf_token() -> str:
+    """HF token from env (required for integration tests)."""
+    token = os.environ.get("HF_TOKEN", "")
+    if not token:
+        pytest.skip("HF_TOKEN not set — skipping integration test")
+    return token
+```
+
+## Writing new tests
+
+### Async tests
+
+Because `asyncio_mode = "auto"` is set globally, any `async def` test function is automatically run under asyncio. There is no need for `@pytest.mark.asyncio`:
+
+```python
+# No decorator needed
+async def test_put_and_get_object(bridge) -> None:
+    result = await bridge.put_object("my-bucket", "hello.txt", b"hello")
+    assert "ETag" in result
+
+    data = await bridge.get_object("my-bucket", "hello.txt")
+    assert data == b"hello"
+```
+
+### Mocking the bridge layer
+
+Unit tests for the bridge layer mock `HubClient` and `CASClient` with `AsyncMock`. The pattern from `test_bridge.py`:
+
+```python tests/test_bridge.py
+from unittest.mock import AsyncMock, MagicMock
+from hugbucket.config import Config
+
+@pytest.fixture
+def config() -> Config:
+    return Config(hf_token="fake-token", hf_namespace="testns")
+
+@pytest.fixture
+def mock_hub() -> MagicMock:
+    hub = MagicMock()
+    hub.batch_files = AsyncMock()
+    hub.get_xet_write_token = AsyncMock()
+    hub.get_paths_info = AsyncMock(return_value=[])
+    hub.close = AsyncMock()
+    return hub
+
+@pytest.fixture
+def bridge(config, mock_hub, mock_cas):
+    from hugbucket.bridge import Bridge
+    b = Bridge(config)
+    b.hub = mock_hub
+    b.cas = mock_cas
+    return b
+```
+
+### Marking integration tests
+
+Annotate any test that calls a live HF endpoint with `@pytest.mark.integration`. The test will be skipped automatically in environments without `HF_TOKEN`:
+
+```python
+@pytest.mark.integration
+class TestBucketOperations:
+    async def test_create_and_delete_bucket(self, bridge) -> None:
+        bucket_name = f"pytest-{int(time.time()) % 100000}"
+        try:
+            await bridge.create_bucket(bucket_name)
+            info = await bridge.head_bucket(bucket_name)
+            assert info is not None
+        finally:
+            await bridge.delete_bucket(bucket_name)
+```

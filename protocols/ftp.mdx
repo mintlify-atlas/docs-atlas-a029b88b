@@ -1,0 +1,148 @@
+---
+title: "FTP Protocol"
+description: "Using HugBucket as an FTP gateway"
+---
+
+## Overview
+
+HugBucket exposes a standard FTP server backed by Hugging Face Storage Buckets. FTP clients connect to port `2121` and navigate a virtual filesystem where the top-level directories correspond to buckets and paths within them map to object keys.
+
+Path mapping: `/<bucket>/<key>`
+
+For example, the FTP path `/my-bucket/data/file.csv` maps to the object key `data/file.csv` in the bucket `my-bucket`.
+
+## Port configuration
+
+| Port | Purpose |
+| --- | --- |
+| `2121` | FTP control connection |
+| `30000`–`30099` | Passive mode data connections |
+
+<Warning>
+Passive mode uses ports `30000`–`30099`. When running in Docker, you must expose the full range: `-p 30000-30099:30000-30099`. When running behind a firewall or NAT, these ports must be forwarded to the host.
+</Warning>
+
+## Authentication
+
+Credentials are configured via environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `FTP_USERNAME` | FTP login username |
+| `FTP_PASSWORD` | FTP login password |
+
+Both variables must be set together. If **both** are left empty, anonymous FTP login is allowed.
+
+<Warning>
+Leaving both `FTP_USERNAME` and `FTP_PASSWORD` empty enables anonymous access. Any client can connect without credentials. Only use this in trusted, isolated environments.
+</Warning>
+
+<Note>
+You cannot set only one of `FTP_USERNAME` or `FTP_PASSWORD` — both must be provided or both must be empty. Starting the server with only one set will fail with a configuration error.
+</Note>
+
+## Starting the server
+
+```bash
+docker run -d \
+  -p 2121:2121 \
+  -p 30000-30099:30000-30099 \
+  -e MODE=ftp \
+  -e HF_TOKEN=hf_xxxxx \
+  -e FTP_USERNAME=hugbucket \
+  -e FTP_PASSWORD=hugbucket \
+  ghcr.io/sachnun/hugbucket
+```
+
+## Connecting
+
+<Steps>
+  <Step title="Open an FTP connection">
+    Connect to port `2121` on your host:
+
+    ```bash
+    ftp localhost 2121
+    ```
+  </Step>
+  <Step title="Authenticate">
+    Enter the username and password you configured with `FTP_USERNAME` and `FTP_PASSWORD`:
+
+    ```
+    Name (localhost:user): hugbucket
+    Password: hugbucket
+    ```
+
+    For anonymous access (when both variables are empty), enter `anonymous` as the username.
+  </Step>
+  <Step title="Enable passive mode">
+    Most FTP clients default to passive mode. If your client requires it explicitly, run:
+
+    ```
+    ftp> passive
+    ```
+
+    Data connections will use a port in the range `30000`–`30099`.
+  </Step>
+  <Step title="Navigate and transfer files">
+    The root directory `/` lists all buckets. Change into a bucket directory to access its objects:
+
+    ```
+    ftp> ls
+    ftp> cd my-bucket
+    ftp> get file.txt
+    ftp> put local-file.txt remote-file.txt
+    ```
+  </Step>
+</Steps>
+
+## Supported FTP operations
+
+The `HugBucketFTPFilesystem` class implements the following FTP commands:
+
+| FTP command | Operation | Notes |
+| --- | --- | --- |
+| `LIST` / `NLST` | List directory | Lists buckets at `/`; lists object keys within a bucket prefix |
+| `RETR` | Retrieve (download) | Downloads an object from Hugging Face storage |
+| `STOR` | Store (upload) | Buffers the upload in memory and writes to storage on connection close |
+| `DELE` | Delete file | Removes an object from storage; raises an error if the path is a directory |
+| `RNFR` / `RNTO` | Rename / move | Copies the object to the new key, then deletes the original; full directory trees are supported |
+| `MKD` | Make directory | At the root level, creates a new bucket; within a bucket, writes a `.hugbucket_keep` marker object |
+| `RMD` | Remove directory | At the root level, deletes the bucket; within a bucket, removes the directory only if empty |
+| `CWD` | Change directory | Navigates the virtual path hierarchy |
+
+<Note>
+`chmod` and `readlink` are not supported and will return a permission or OS error if invoked.
+</Note>
+
+## Path mapping
+
+The FTP virtual filesystem maps directly onto the `/{bucket}/{key}` hierarchy:
+
+| FTP path | Bucket | Object key |
+| --- | --- | --- |
+| `/` | — | Root: lists all buckets |
+| `/my-bucket` | `my-bucket` | — (directory) |
+| `/my-bucket/file.txt` | `my-bucket` | `file.txt` |
+| `/my-bucket/data/report.csv` | `my-bucket` | `data/report.csv` |
+
+Paths are normalized: trailing slashes, `.`, and `..` segments are resolved before being sent to the backend.
+
+## Passive mode
+
+HugBucket configures passive data ports in the range `30000`–`30099` (100 ports). Each FTP data transfer (upload, download, or directory listing) opens one port from this range for the duration of the transfer.
+
+<Warning>
+If you are running HugBucket behind a reverse proxy, load balancer, or NAT gateway, the full port range `30000`–`30099` must be forwarded or exposed. Failure to do so will cause directory listings and file transfers to hang or time out in passive mode.
+</Warning>
+
+```bash
+# Docker example with full passive port range exposed
+docker run -d \
+  -p 2121:2121 \
+  -p 30000-30099:30000-30099 \
+  -e MODE=ftp \
+  -e HF_TOKEN=hf_xxxxx \
+  -e FTP_USERNAME=hugbucket \
+  -e FTP_PASSWORD=hugbucket \
+  ghcr.io/sachnun/hugbucket
+```
